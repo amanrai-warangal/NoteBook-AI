@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional
 
 class NoteCreate(BaseModel):
     title : str = Field(...,min_length=1,max_length=100)
@@ -14,3 +14,8 @@ class NoteResponse(BaseModel):
 
     class Config:
         populate_by_name = True  # Allows using either "id" or "_id" interchangeably
+
+class NoteUpdate(BaseModel):
+    title : Optional[str] = Field(None,min_length=1,max_length=100)
+    content : Optional[str] = Field(None)
+    tags : Optional[List[str]] = Field(None)
