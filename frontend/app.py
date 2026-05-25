@@ -22,16 +22,99 @@ if "auth_page" not in st.session_state:
 # ==========================================
 @st.dialog("📖 Full Document View", width="large")
 def show_note_modal(note_item):
-    """Renders a clean native overlay popup to show full content details."""
-    st.header(note_item["title"])
-    
-    if note_item.get("tags"):
-        st.write(" ".join([f"🏷️ `{tag}`" for tag in note_item["tags"]]))
+    """
+    Renders an interactive native overlay modal popup. Allows reading full text,
+    updating title/content/tags, or executing a safe cascade delete operation.
+    """
+    # 🔐 Setup our matching secure network token authorization header packet
+    headers = {"Authorization": f"Bearer {st.session_state.token}"}
+    note_id = note_item["id"]
+
+    # Use Streamlit session state tabs or sub-states to handle Toggle Modes cleanly
+    if "edit_mode" not in st.session_state:
+        st.session_state.edit_mode = False
+
+    # -------------------------------------------------------------
+    # 👁️ MODE A: READ-ONLY VIEWS (WITH PREVIEW & REMOVAL SWITCHES)
+    # -------------------------------------------------------------
+    if not st.session_state.edit_mode:
+        st.header(note_item["title"])
         
-    st.divider()
-    st.write(note_item["content"])
-    st.divider()
-    st.caption(f"System Identifier: `{note_item['id']}`")
+        if note_item.get("tags"):
+            st.write(" ".join([f"🏷️ `{tag}`" for tag in note_item["tags"]]))
+            
+        st.divider()
+        st.write(note_item["content"])
+        st.divider()
+
+        st.caption(f"Internal System ID: `{note_id}`")
+        st.divider()
+
+        # Action Buttons Layout Table (Aligning buttons side-by-side using table columns)
+        col1, col2, col3 = st.columns([1, 1, 2])
+        
+        with col1:
+            if st.button("📝 Edit Note", use_container_width=True):
+                st.session_state.edit_mode = True
+                st.rerun()
+                
+        with col2:
+            if st.button("🗑️ Delete", type="primary", use_container_width=True):
+                # Execute direct delete request matching user ownership tokens
+                with st.spinner("Dropping Note Asset..."):
+                    response = requests.delete(f"{BASE_URL}/notes/{note_id}", headers=headers)
+                    
+                if response.status_code == 204:
+                    st.success("Note dropped successfully!")
+                    st.session_state.edit_mode = False
+                    # Force frontend dashboard query sync rerun
+                    st.rerun()
+                else:
+                    st.error(f"Deletion failed: {response.json().get('detail')}")
+
+    # -------------------------------------------------------------
+    # ✏️ MODE B: LIVE IN-PLACE EDITING DASHBOARD
+    # -------------------------------------------------------------
+    else:
+        st.subheader("✏️ Edit Note Asset Workspace")
+        
+        # Pre-populate text fields with existing database field variables
+        updated_title = st.text_input("Title", value=note_item["title"])
+        
+        # Convert list of tags back into a clean comma-separated string for easy editing
+        existing_tags_str = ", ".join(note_item.get("tags", []))
+        updated_tags_raw = st.text_input("Tags (comma-separated)", value=existing_tags_str)
+        
+        updated_content = st.text_area("Content Space", value=note_item["content"], height=250)
+        
+        st.divider()
+        col_save, col_cancel = st.columns(2)
+        
+        with col_save:
+            if st.button("💾 Save Changes", type="primary", use_container_width=True):
+                # Parse updated tag fields cleanly back into standard python arrays
+                processed_tags = [t.strip().lower() for t in updated_tags_raw.split(",") if t.strip()]
+                
+                payload = {
+                    "title": updated_title,
+                    "content": updated_content,
+                    "tags": processed_tags
+                }
+                
+                with st.spinner("Updating database indexes..."):
+                    response = requests.put(f"{BASE_URL}/notes/{note_id}", json=payload, headers=headers)
+                    
+                if response.status_code == 200:
+                    st.toast("✅ Changes saved perfectly!")
+                    st.session_state.edit_mode = False
+                    st.rerun()
+                else:
+                    st.error(f"Update Failure: {response.json().get('detail')}")
+                    
+        with col_cancel:
+            if st.button("❌ Cancel", use_container_width=True):
+                st.session_state.edit_mode = False
+                st.rerun()
 
 
 # ==========================================
@@ -159,7 +242,7 @@ def render_workspace_view():
             content = st.text_area("Note Content", placeholder="Type deep technical details here...", height=150)
             tags_input = st.text_input("Tags (comma separated)", placeholder="e.g., microservices, infra")
             
-            submit_btn = st.form_submit_button("Save Note Asset", use_container_width=True, type="primary")
+            submit_btn = st.form_submit_button("Save Note", use_container_width=True, type="primary")
             
             if submit_btn:
                 if not title or not content:

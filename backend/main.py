@@ -7,6 +7,8 @@ from bson import ObjectId  # BSON is the binary JSON format MongoDB uses interna
 from auth import get_password_hash, verify_password, create_access_token, get_current_user
 import os
 
+from ai import generate_text_embedding
+
 app = FastAPI(title="Smart Notes App")
 
 # ==========================================
@@ -146,12 +148,17 @@ async def get_notes(q: str = None, current_user : dict = Depends(get_current_use
 @app.post("/notes", response_model=NoteResponse, status_code=status.HTTP_201_CREATED, response_model_by_alias=False)
 async def create_note(note_data: NoteCreate, current_user : dict = Depends(get_current_user)):
     """
-    Persists a fresh note instance into MongoDB. Dumps the verified 
-    Pydantic schema into a raw dictionary structure, executes a 
-    non-blocking insert statement, and returns the verified document data.
+    Persists a fresh note instance into MongoDB, automatically calling 
+    the local Ollama AI container via OpenAI-style routing to inject math embeddings.
     """
     new_note_dict = note_data.model_dump()
     new_note_dict["user_id"] = current_user["user_id"]
+
+    # 🌟 OPTIMAL CONTEXT PACKING: Combine title and body so concepts tie together perfectly
+    combined_text_context = f"Title: {note_data.title}\nContent: {note_data.content}"
+    note_vector = await generate_text_embedding(combined_text_context)
+    new_note_dict["embedding"] = note_vector
+
     result = await notes_collection.insert_one(new_note_dict)
     
     inserted_note = await notes_collection.find_one({"_id": result.inserted_id})

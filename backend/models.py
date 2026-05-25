@@ -12,6 +12,7 @@ class NoteResponse(BaseModel):
     content : str
     tags : List[str]
     user_id : str  #ADDED: Keeps your private database rows serialized safely!
+    embedding: Optional[List[float]] = None # ADDED: Allows storing raw floating-point numbers, holds 768 float array
 
     class Config:
         populate_by_name = True  
