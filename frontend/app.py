@@ -7,6 +7,23 @@ BASE_URL = "http://127.0.0.1:8000"
 st.set_page_config(page_title="Smart Notes App", page_icon="📝", layout="wide")
 
 # ==========================================
+# 🎨 INJECT UNIFORM CARD HEIGHT STYLES (CSS)
+# ==========================================
+st.markdown("""
+    <style>
+        /* Forces all border containers inside our card loops to anchor to a fixed layout height */
+        div[data-testid="stVComponentBlock"] > div.stElementContainer div[data-testid="stVerticalBlockBorderWrapper"] {
+            min-height: 220px !important;
+            max-height: 220px !important;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+
+# ==========================================
 # 💾 APPLICATION STATE MANAGEMENT (AUTH CORE)
 # ==========================================
 if "token" not in st.session_state:
@@ -26,11 +43,9 @@ def show_note_modal(note_item):
     Renders an interactive native overlay modal popup. Allows reading full text,
     updating title/content/tags, or executing a safe cascade delete operation.
     """
-    # 🔐 Setup our matching secure network token authorization header packet
     headers = {"Authorization": f"Bearer {st.session_state.token}"}
     note_id = note_item["id"]
 
-    # Use Streamlit session state tabs or sub-states to handle Toggle Modes cleanly
     if "edit_mode" not in st.session_state:
         st.session_state.edit_mode = False
 
@@ -47,10 +62,9 @@ def show_note_modal(note_item):
         st.write(note_item["content"])
         st.divider()
 
-        st.caption(f"Internal System ID: `{note_id}`")
+        st.caption(f"System ID: `{note_id}`")
         st.divider()
 
-        # Action Buttons Layout Table (Aligning buttons side-by-side using table columns)
         col1, col2, col3 = st.columns([1, 1, 2])
         
         with col1:
@@ -60,14 +74,12 @@ def show_note_modal(note_item):
                 
         with col2:
             if st.button("🗑️ Delete", type="primary", use_container_width=True):
-                # Execute direct delete request matching user ownership tokens
                 with st.spinner("Dropping Note Asset..."):
                     response = requests.delete(f"{BASE_URL}/notes/{note_id}", headers=headers)
                     
                 if response.status_code == 204:
                     st.success("Note dropped successfully!")
                     st.session_state.edit_mode = False
-                    # Force frontend dashboard query sync rerun
                     st.rerun()
                 else:
                     st.error(f"Deletion failed: {response.json().get('detail')}")
@@ -78,13 +90,9 @@ def show_note_modal(note_item):
     else:
         st.subheader("✏️ Edit Note Asset Workspace")
         
-        # Pre-populate text fields with existing database field variables
         updated_title = st.text_input("Title", value=note_item["title"])
-        
-        # Convert list of tags back into a clean comma-separated string for easy editing
         existing_tags_str = ", ".join(note_item.get("tags", []))
         updated_tags_raw = st.text_input("Tags (comma-separated)", value=existing_tags_str)
-        
         updated_content = st.text_area("Content Space", value=note_item["content"], height=250)
         
         st.divider()
@@ -92,7 +100,6 @@ def show_note_modal(note_item):
         
         with col_save:
             if st.button("💾 Save Changes", type="primary", use_container_width=True):
-                # Parse updated tag fields cleanly back into standard python arrays
                 processed_tags = [t.strip().lower() for t in updated_tags_raw.split(",") if t.strip()]
                 
                 payload = {
@@ -132,7 +139,7 @@ def render_navbar():
             st.caption("A sleek, non-blocking asynchronous note system powered by FastAPI & MongoDB")
             
     with nav_col2:
-        st.markdown("<br>", unsafe_allow_html=True)  # Clean vertical layout nudge
+        st.markdown("<br>", unsafe_allow_html=True)
         if st.session_state.token:
             if st.button("🚪 Log Out", use_container_width=True, type="secondary"):
                 st.session_state.token = None
@@ -174,12 +181,10 @@ def render_auth_view():
                                 st.toast(f"Welcome back, {username}! Access granted.", icon="🚀")
                                 st.rerun()
                             else:
-                                # Safely extract error message even if the backend returns raw text or HTML
                                 try:
                                     error_detail = response.json().get("detail", "Authentication failed.")
                                 except Exception:
                                     error_detail = response.text if response.text else "Unknown backend error."
-                                    
                                 st.error(f"❌ {error_detail}")
                         except requests.exceptions.ConnectionError:
                             st.error("Unable to link to local backend validation server.")
@@ -211,12 +216,10 @@ def render_auth_view():
                                 st.toast("Profile built successfully!", icon="❇️")
                                 st.rerun()
                             else:
-                                # Safely extract error message even if the backend returns raw text or HTML
                                 try:
                                     error_detail = response.json().get("detail", "Registration blocked.")
                                 except Exception:
                                     error_detail = response.text if response.text else "Unknown backend error."
-                                    
                                 st.error(f"❌ {error_detail}")
                         except requests.exceptions.ConnectionError:
                             st.error("Unable to link to local backend validation server.")
@@ -252,7 +255,6 @@ def render_workspace_view():
                     payload = {"title": title, "content": content, "tags": tags_list}
                     
                     try:
-                        # Headers configuration setup
                         headers = {"Authorization": f"Bearer {st.session_state.token}"}
                         response = requests.post(f"{BASE_URL}/notes", json=payload, headers=headers)
                         
@@ -270,16 +272,37 @@ def render_workspace_view():
         
         @st.fragment
         def live_search_container():
-            search_query = st.text_input(
-                "🔍 Search notes instantly...", 
-                placeholder="Type keywords to look up matching items...",
-                key="realtime_search"
-            )
+            # Dedicated Layout columns for the search panel layout
+            search_col, toggle_col = st.columns([2, 1])
+            
+            with search_col:
+                search_query = st.text_input(
+                    "Search Input Box",
+                    label_visibility="collapsed",
+                    placeholder="Search notes instantly...",
+                    key="realtime_search"
+                )
+                
+            with toggle_col:
+                # 🌟 SWAPPED SELECTBOX FOR ST.TOGGLE: Sleek switch engine design pattern
+                ai_mode_active = st.toggle(
+                    "🧠 AI Semantic Search",
+                    value=False,
+                    key="search_mode_toggle_switch"
+                )
 
             try:
-                params = {"q": search_query} if search_query else {}
                 headers = {"Authorization": f"Bearer {st.session_state.token}"}
-                response = requests.get(f"{BASE_URL}/notes", params=params, headers=headers)
+                params = {"q": search_query} if search_query else {}
+                
+                # Branching endpoint route logic tied directly to the boolean toggle switch state
+                if search_query and ai_mode_active:
+                    endpoint_route = f"{BASE_URL}/notes/semantic-search"
+                    params["limit"] = 3  # 🌟 LOCKED LIMIT: Restricts semantic returns to 3 matches
+                else:
+                    endpoint_route = f"{BASE_URL}/notes"
+
+                response = requests.get(endpoint_route, params=params, headers=headers)
                 
                 if response.status_code == 200:
                     notes = response.json()
@@ -299,18 +322,24 @@ def render_workspace_view():
                                     note = notes[index]
                                     with grid_cols[step]:
                                         with st.container(border=True):
-                                            st.markdown(f"### {note['title']}")
+                                            # Title formatting with uniform bounding
+                                            title_text = note['title']
+                                            if len(title_text) > 35:
+                                                title_text = title_text[:35] + "..."
+                                            st.markdown(f"### {title_text}")
                                             
+                                            # Truncate content text uniformly to keep cards completely crisp
                                             display_text = note["content"]
-                                            if len(display_text) > 120:
-                                                display_text = display_text[:120] + "..."
+                                            if len(display_text) > 100:
+                                                display_text = display_text[:100] + "..."
                                             st.write(display_text)
                                             
-                                            action_col, btn_col = st.columns([2, 1])
+                                            action_col, btn_col = st.columns([1.8, 1])
                                             
                                             with action_col:
                                                 if note.get("tags"):
-                                                    st.write(" ".join([f"`{tag}`" for tag in note["tags"]]))
+                                                    # Show first 2 tags only on dashboard card preview for spatial grid safety
+                                                    st.write(" ".join([f"`{tag}`" for tag in note["tags"][:2]]))
                                             
                                             with btn_col:
                                                 if st.button("Expand ↗", key=f"expand_{note['id']}", use_container_width=True):
