@@ -1,13 +1,13 @@
 from fastapi import FastAPI, HTTPException, status, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from models import NoteCreate, NoteResponse, NoteUpdate, UserLogin, UserRegister, UserResponse, TokenResponse
+from models import NoteCreate, NoteResponse, NoteUpdate, UserLogin, UserRegister, UserResponse, TokenResponse, ChatRequest, ChatResponse
 from typing import List
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId  # BSON is the binary JSON format MongoDB uses internally
 from auth import get_password_hash, verify_password, create_access_token, get_current_user
 import os
 import numpy as np
-from ai import generate_text_embedding
+from ai import generate_text_embedding, generate_llm_response
 
 app = FastAPI(title="Smart Notes App")
 
@@ -234,3 +234,57 @@ async def delete_note(note_id: str, current_user: dict = Depends(get_current_use
         raise HTTPException(status_code=404, detail="Note not found")
         
     return None
+
+@app.post("/ai/chat", response_model=ChatResponse)
+async def rag_chat_agent(payload: ChatRequest, current_user: dict = Depends(get_current_user)):
+    """
+    Orchestrates the full Retrieval-Augmented Generation (RAG) loop.
+    Fetches relevant private note layers, constructs a secure context prompt,
+    and returns a localized generation answer along with verification sources.
+    """
+    user_query = payload.question
+    if not user_query.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be left empty")
+
+    # 1. RETRIEVE: Pull the top 2 source notes matching your concepts
+    top_notes = await semantic_search_notes(q=user_query, limit=2, current_user=current_user)
+
+    # 2. AUGMENT & COLLECT METADATA: Gather text for AI, and keys for the user 🌟
+    context_accumulator = []
+    source_metadata_list = []  # To hold safe UI data (No raw embeddings!)
+
+    for note in top_notes:
+        # Build the background prompt context
+        context_accumulator.append(f"--- NOTE ASSET ---\nTitle: {note['title']}\nContent: {note['content']}")
+        
+        # Append safe reference tokens to show the user in frontend
+        source_metadata_list.append({
+            "id": note["_id"],
+            "title": note["title"],
+            "tags": note.get("tags", [])
+        })
+    
+    extracted_context = "\n\n".join(context_accumulator) if context_accumulator else "No relevant personal notes found."
+
+    # 3. CONSTRUCT SYSTEM BOUNDARY PROMPT
+    SYSTEM_PROMPT = (
+        "You are 'Smart Notes AI', a highly precise personal research assistant.\n"
+        "Your core directive is to answer the user's question using ONLY the verified personal notes context provided below.\n"
+        "Strict Guidelines:\n"
+        "1. Rely strictly on the provided notes context. Do not invent facts or extrapolate beyond the text.\n"
+        "2. If the answer cannot be confidently derived from the notes context, reply exactly with: "
+        "'I am sorry, but your private notes collection does not contain information to answer this question.'\n\n"
+        f"🛡️ [VERIFIED PERSONAL NOTES CONTEXT]:\n{extracted_context}"
+    )
+
+    # 4. GENERATE: Feed payload to your local CPU-friendly Qwen model
+    ai_generation = await generate_llm_response(
+        system_prompt=SYSTEM_PROMPT,
+        user_prompt=user_query
+    )
+
+    # 5. RETURN BOTH ANSWER AND METADATA 🌟
+    return {
+        "answer": ai_generation,
+        "sources": source_metadata_list
+    }

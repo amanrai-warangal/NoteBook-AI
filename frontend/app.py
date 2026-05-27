@@ -33,6 +33,10 @@ if "username" not in st.session_state:
 if "auth_page" not in st.session_state:
     st.session_state.auth_page = "login"  # Options: "login" or "register"
 
+# 🌟 NEW FOR DAY 8: In-memory conversation state persistence
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
 
 # ==========================================
 # 📋 NATIVE MODAL DIALOG
@@ -50,7 +54,7 @@ def show_note_modal(note_item):
         st.session_state.edit_mode = False
 
     # -------------------------------------------------------------
-    # 👁️ MODE A: READ-ONLY VIEWS (WITH PREVIEW & REMOVAL SWITCHES)
+    # 👁️ MODE A: READ-ONLY VIEWS
     # -------------------------------------------------------------
     if not st.session_state.edit_mode:
         st.header(note_item["title"])
@@ -144,6 +148,7 @@ def render_navbar():
             if st.button("🚪 Log Out", use_container_width=True, type="secondary"):
                 st.session_state.token = None
                 st.session_state.username = None
+                st.session_state.chat_history = []  # Clear session state cache safely
                 st.toast("Logged out successfully. See you soon!", icon="ℹ️")
                 st.rerun()
                 
@@ -230,10 +235,10 @@ def render_auth_view():
 
 
 # ==========================================
-# 📋 VIEW: THE NOTES WORKSPACE
+# 📋 TAB VIEW A: NOTEBOOK WORKSPACE
 # ==========================================
-def render_workspace_view():
-    """Renders the core two-column notes workflow interface."""
+def render_notebook_tab():
+    """Renders the standard notebook workspace environment layout."""
     col1, col2 = st.columns([1, 2], gap="large")
 
     # LEFT COLUMN: CREATE A NEW NOTE
@@ -272,7 +277,6 @@ def render_workspace_view():
         
         @st.fragment
         def live_search_container():
-            # Dedicated Layout columns for the search panel layout
             search_col, toggle_col = st.columns([2, 1])
             
             with search_col:
@@ -284,7 +288,6 @@ def render_workspace_view():
                 )
                 
             with toggle_col:
-                # 🌟 SWAPPED SELECTBOX FOR ST.TOGGLE: Sleek switch engine design pattern
                 ai_mode_active = st.toggle(
                     "🧠 AI Semantic Search",
                     value=False,
@@ -295,10 +298,9 @@ def render_workspace_view():
                 headers = {"Authorization": f"Bearer {st.session_state.token}"}
                 params = {"q": search_query} if search_query else {}
                 
-                # Branching endpoint route logic tied directly to the boolean toggle switch state
                 if search_query and ai_mode_active:
                     endpoint_route = f"{BASE_URL}/notes/semantic-search"
-                    params["limit"] = 3  # 🌟 LOCKED LIMIT: Restricts semantic returns to 3 matches
+                    params["limit"] = 3  
                 else:
                     endpoint_route = f"{BASE_URL}/notes"
 
@@ -322,13 +324,11 @@ def render_workspace_view():
                                     note = notes[index]
                                     with grid_cols[step]:
                                         with st.container(border=True):
-                                            # Title formatting with uniform bounding
                                             title_text = note['title']
                                             if len(title_text) > 35:
                                                 title_text = title_text[:35] + "..."
                                             st.markdown(f"### {title_text}")
                                             
-                                            # Truncate content text uniformly to keep cards completely crisp
                                             display_text = note["content"]
                                             if len(display_text) > 100:
                                                 display_text = display_text[:100] + "..."
@@ -338,7 +338,6 @@ def render_workspace_view():
                                             
                                             with action_col:
                                                 if note.get("tags"):
-                                                    # Show first 2 tags only on dashboard card preview for spatial grid safety
                                                     st.write(" ".join([f"`{tag}`" for tag in note["tags"][:2]]))
                                             
                                             with btn_col:
@@ -352,7 +351,71 @@ def render_workspace_view():
 
         live_search_container()
 
+def render_ai_playground_tab():
+    """Renders a conversational chat engine interface tied directly to the backend RAG pipeline."""
+    st.subheader("💬 Ask Your Knowledge Base")
+    st.caption("Ask questions drawn strictly from your private notes cluster. Powered by local LLM orchestration.")
+    st.divider()
 
+    # 1. Loop through and draw our stored session history messages onto the UI viewport
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+            
+            # 🌟 NEW: Render sources for past assistant bubbles if they exist in history state
+            if message["role"] == "assistant" and "sources" in message and message["sources"]:
+                with st.expander("📚 Verified References Used", expanded=False):
+                    for idx, src in enumerate(message["sources"], 1):
+                        st.markdown(f"**{idx}. {src['title']}**")
+                        if src.get("tags"):
+                            # Render small tag preview indicators
+                            st.caption(" ".join([f"`🏷️ {tag}`" for tag in src["tags"]]))
+
+    # 2. Intercept fresh user questions typed into the bottom sticky input bar
+    if user_question := st.chat_input("Ask a question about your saved notes..."):
+        
+        with st.chat_message("user"):
+            st.write(user_question)
+            
+        st.session_state.chat_history.append({"role": "user", "content": user_question})
+
+        # 3. Ship the prompt across the local system loop to our FastAPI RAG agent route
+        headers = {"Authorization": f"Bearer {st.session_state.token}"}
+        payload = {"question": user_question}
+        
+        with st.chat_message("assistant"):
+            with st.spinner("Analyzing vector neighborhoods & compiling response..."):
+                try:
+                    response = requests.post(f"{BASE_URL}/ai/chat", json=payload, headers=headers)
+                    
+                    if response.status_code == 200:
+                        res_data = response.json()
+                        ai_answer = res_data["answer"]
+                        ai_sources = res_data.get("sources", [])  # 🌟 NEW: Capture source nodes list
+                        
+                        # Print the primary answer text
+                        st.write(ai_answer)
+                        
+                        # 🌟 NEW: Render drop-down expander for real-time verification sources
+                        if ai_sources:
+                            with st.expander("📚 Verified References Used", expanded=False):
+                                for idx, src in enumerate(ai_sources, 1):
+                                    st.markdown(f"**{idx}. {src['title']}**")
+                                    if src.get("tags"):
+                                        st.caption(" ".join([f"`{tag}`" for tag in src["tags"]]))
+                        
+                        # Commit assistant reply AND its specific source references into memory state cache
+                        st.session_state.chat_history.append({
+                            "role": "assistant", 
+                            "content": ai_answer,
+                            "sources": ai_sources  # Persistent source referencing tracking
+                        })
+                    else:
+                        error_detail = response.json().get("detail", "Failed to retrieve local AI synthesis payload.")
+                        st.error(f"❌ Error: {error_detail}")
+                        
+                except requests.exceptions.ConnectionError:
+                    st.error("Unable to cross-link with backend AI runtime services.")
 # ==========================================
 # 🚦 CORE EXECUTION ROUTER ENTRYPOINT
 # ==========================================
@@ -361,4 +424,11 @@ render_navbar()
 if st.session_state.token is None:
     render_auth_view()
 else:
-    render_workspace_view()
+    # 🌟 NEW FOR DAY 8: Splitting application context space cleanly using layout tabs
+    tab_notebook, tab_playground = st.tabs(["📂 My Notebook Workspace", "💬 AI Playground Chat"])
+    
+    with tab_notebook:
+        render_notebook_tab()
+        
+    with tab_playground:
+        render_ai_playground_tab()

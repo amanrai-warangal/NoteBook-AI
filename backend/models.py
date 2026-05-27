@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 class NoteCreate(BaseModel):
     title : str = Field(..., min_length=1, max_length=100)
@@ -41,3 +41,11 @@ class UserResponse(BaseModel):
 class TokenResponse(BaseModel):
     access_token : str
     token_type : str = "bearer"
+
+# RAG Chat
+class ChatRequest(BaseModel):
+    question : str = Field(...,placeholder="Ask your knowledge base anything")
+
+class ChatResponse(BaseModel):
+    answer : str
+    sources: List[Dict[str, Any]] = []
