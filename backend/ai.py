@@ -44,7 +44,7 @@ async def generate_llm_response(system_prompt: str, user_prompt : str) -> str:
                 {"role" : "system", "content" : system_prompt},
                 {"role" : "user", "content" : user_prompt}
             ],
-            temperature = 0.2 #low temp keeps the model strict, factual, and focused on your notes
+            temperature = 0.4 #slightly higher to avoid the model parroting its instructions
         )
 
         return response.choices[0].message.content

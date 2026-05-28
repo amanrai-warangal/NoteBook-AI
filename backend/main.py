@@ -8,6 +8,8 @@ from auth import get_password_hash, verify_password, create_access_token, get_cu
 import os
 import numpy as np
 from ai import generate_text_embedding, generate_llm_response
+from datetime import datetime
+import uuid #random hash for chat session
 
 app = FastAPI(title="Smart Notes App")
 
@@ -29,6 +31,7 @@ client = AsyncIOMotorClient(MONGODB_URL)
 db = client.notes_db
 notes_collection = db.notes
 users_collection = db.users 
+chats_collection = db.chats
 
 
 # ==========================================
@@ -130,8 +133,8 @@ async def semantic_search_notes(q: str, limit: int = 5, current_user: dict = Dep
 
     scored_notes.sort(key=lambda x: x["score"], reverse=True)
 
-    # 🌟 NEW: Enforce a strict semantic relevance threshold (0.35 is the sweet spot for nomic-embed)
-    SIMILARITY_THRESHOLD = 0.35
+    # Use a lower threshold to avoid filtering out partially relevant notes
+    SIMILARITY_THRESHOLD = 0.2
     relevant_notes = [note for note in scored_notes if note["score"] >= SIMILARITY_THRESHOLD]
 
     top_matches = relevant_notes[:limit]
@@ -239,52 +242,154 @@ async def delete_note(note_id: str, current_user: dict = Depends(get_current_use
 async def rag_chat_agent(payload: ChatRequest, current_user: dict = Depends(get_current_user)):
     """
     Orchestrates the full Retrieval-Augmented Generation (RAG) loop.
-    Fetches relevant private note layers, constructs a secure context prompt,
-    and returns a localized generation answer along with verification sources.
+    Performs its own scoring to determine whether notes are truly relevant,
+    and only attributes sources when they actually contributed to the answer.
     """
     user_query = payload.question
     if not user_query.strip():
         raise HTTPException(status_code=400, detail="Question cannot be left empty")
 
-    # 1. RETRIEVE: Pull the top 2 source notes matching your concepts
-    top_notes = await semantic_search_notes(q=user_query, limit=2, current_user=current_user)
-
-    # 2. AUGMENT & COLLECT METADATA: Gather text for AI, and keys for the user 🌟
-    context_accumulator = []
-    source_metadata_list = []  # To hold safe UI data (No raw embeddings!)
-
-    for note in top_notes:
-        # Build the background prompt context
-        context_accumulator.append(f"--- NOTE ASSET ---\nTitle: {note['title']}\nContent: {note['content']}")
-        
-        # Append safe reference tokens to show the user in frontend
-        source_metadata_list.append({
-            "id": note["_id"],
-            "title": note["title"],
-            "tags": note.get("tags", [])
-        })
+    # 1. RETRIEVE: Generate query embedding and score against all user notes
+    query_vector = await generate_text_embedding(user_query)
     
-    extracted_context = "\n\n".join(context_accumulator) if context_accumulator else "No relevant personal notes found."
+    context_accumulator = []
+    source_metadata_list = []
+    
+    if query_vector:
+        cursor = notes_collection.find({"user_id": current_user["user_id"]})
+        user_notes = []
+        async for doc in cursor:
+            user_notes.append(format_note(doc))
+        
+        # Score all notes
+        A = np.array(query_vector)
+        scored_notes = []
+        for note in user_notes:
+            if not note.get("embedding"):
+                continue
+            B = np.array(note["embedding"])
+            norm_A = np.linalg.norm(A)
+            norm_B = np.linalg.norm(B)
+            if norm_A == 0 or norm_B == 0:
+                continue
+            similarity = float(np.dot(A, B) / (norm_A * norm_B))
+            scored_notes.append((similarity, note))
+        
+        scored_notes.sort(key=lambda x: x[0], reverse=True)
+        
+        # Only include notes with strong relevance as actual sources
+        SOURCE_THRESHOLD = 0.4
+        CONTEXT_THRESHOLD = 0.25
+        
+        for score, note in scored_notes[:5]:
+            if score >= CONTEXT_THRESHOLD:
+                context_accumulator.append(f"Title: {note['title']}\nContent: {note['content']}")
+            if score >= SOURCE_THRESHOLD:
+                source_metadata_list.append({
+                    "id": note["_id"],
+                    "title": note["title"],
+                    "tags": note.get("tags", [])
+                })
 
-    # 3. CONSTRUCT SYSTEM BOUNDARY PROMPT
-    SYSTEM_PROMPT = (
-        "You are 'Smart Notes AI', a highly precise personal research assistant.\n"
-        "Your core directive is to answer the user's question using ONLY the verified personal notes context provided below.\n"
-        "Strict Guidelines:\n"
-        "1. Rely strictly on the provided notes context. Do not invent facts or extrapolate beyond the text.\n"
-        "2. If the answer cannot be confidently derived from the notes context, reply exactly with: "
-        "'I am sorry, but your private notes collection does not contain information to answer this question.'\n\n"
-        f"🛡️ [VERIFIED PERSONAL NOTES CONTEXT]:\n{extracted_context}"
-    )
+    has_relevant_notes = len(context_accumulator) > 0
+    extracted_context = "\n\n".join(context_accumulator) if context_accumulator else ""
 
-    # 4. GENERATE: Feed payload to your local CPU-friendly Qwen model
+    # 2. CONSTRUCT SYSTEM PROMPT based on whether notes are relevant
+    if has_relevant_notes:
+        SYSTEM_PROMPT = (
+            "You are a helpful assistant. Answer the user's question using the personal notes below.\n"
+            "Rules:\n"
+            "- If the notes are relevant, answer using them.\n"
+            "- If the notes are NOT relevant, answer from your general knowledge and begin with: 'Based on general knowledge:'\n"
+            "- Never apologize or say you cannot answer. Always provide a direct answer.\n"
+            "- Do not mention notes, limitations, or add any disclaimers.\n\n"
+            f"NOTES:\n{extracted_context}"
+        )
+    else:
+        SYSTEM_PROMPT = (
+            "You are a helpful assistant. Answer the user's question directly from your general knowledge.\n"
+            "Begin your response with: 'Based on general knowledge:'\n"
+            "Never apologize or say you cannot answer. Just answer directly."
+        )
+
+    # 3. GENERATE
     ai_generation = await generate_llm_response(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=user_query
     )
 
-    # 5. RETURN BOTH ANSWER AND METADATA 🌟
+    # 4. If the AI used general knowledge, don't show notes as sources
+    if "based on general knowledge" in ai_generation.lower() or not source_metadata_list:
+        final_sources = [{"id": "external", "title": "General Knowledge", "tags": ["ai-generated"]}]
+    else:
+        final_sources = source_metadata_list
+
+    # 5. SESSION ROUTING
+    session_id = payload.session_id or f"session_{uuid.uuid4().hex[:8]}"
+    derived_title = user_query[:20] + "..." if len(user_query) > 20 else user_query
+
+    new_interaction = {
+        "question": user_query,
+        "answer": ai_generation,
+        "sources": final_sources,
+        "timestamp": datetime.utcnow()
+    }
+
+    await chats_collection.update_one(
+        {"user_id": current_user["user_id"], "session_id": session_id},
+        {
+            "$push": {"interactions": new_interaction},
+            "$set": {"updated_at": datetime.utcnow()},
+            "$setOnInsert": {"title": derived_title}
+        },
+        upsert=True
+    )
+
     return {
         "answer": ai_generation,
-        "sources": source_metadata_list
+        "session_id": session_id,
+        "sources": final_sources
     }
+
+@app.get("/ai/history")
+async def get_all_sessions(current_user : dict = Depends(get_current_user)):
+    """
+    Returns a light index list of all active session metadata cards 
+    for the user's sidebar panel view.
+    """
+    sessions = []
+    # Sort threads so the most recently active conversational thread shows up at the top
+    cursor = chats_collection.find(
+        {"user_id": current_user["user_id"]}, 
+        {"session_id": 1, "title": 1, "updated_at": 1}
+    ).sort("updated_at", -1)
+
+    async for doc in cursor:
+        sessions.append({
+            "session_id": doc["session_id"],
+            "title": doc.get("title", "Active Chat Session")
+        })
+    return sessions
+
+@app.get("/ai/history/{session_id}")
+async def get_single_session_thread(session_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Hydrates the full historical array of interaction blocks 
+    for the specific active thread selected in the sidebar panel.
+    """
+    session_doc = await chats_collection.find_one({"user_id": current_user["user_id"], "session_id": session_id})
+    if not session_doc:
+        raise HTTPException(status_code=404, detail="Conversation session thread not found")
+    
+    return session_doc.get("interactions", [])
+
+
+@app.delete("/ai/history/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_chat_session(session_id: str, current_user: dict = Depends(get_current_user)):
+    """Deletes a specific chat session for the current user."""
+    result = await chats_collection.delete_one(
+        {"user_id": current_user["user_id"], "session_id": session_id}
+    )
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    return None

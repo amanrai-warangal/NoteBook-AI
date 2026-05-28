@@ -45,7 +45,9 @@ class TokenResponse(BaseModel):
 # RAG Chat
 class ChatRequest(BaseModel):
     question : str = Field(...,placeholder="Ask your knowledge base anything")
+    session_id: Optional[str] = None  # 🌟 Link messages to a specific sidebar thread
 
 class ChatResponse(BaseModel):
     answer : str
+    session_id: str  # 🌟 Return the session ID back to the frontend
     sources: List[Dict[str, Any]] = []
