@@ -11,7 +11,7 @@ from ai import generate_text_embedding, generate_llm_response
 from datetime import datetime
 import uuid #random hash for chat session
 
-app = FastAPI(title="Smart Notes App")
+app = FastAPI(title="NoteBook AI")
 
 # ==========================================
 # 🌐 CORS MIDDLEWARE SECURITY CONFIGURATION
