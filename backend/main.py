@@ -10,6 +10,7 @@ import numpy as np
 from ai import generate_text_embedding, generate_llm_response
 from datetime import datetime
 import uuid #random hash for chat session
+from limiter import ai_chat_limiter
 
 app = FastAPI(title="NoteBook AI")
 
@@ -246,6 +247,15 @@ async def rag_chat_agent(payload: ChatRequest, current_user: dict = Depends(get_
     and only attributes sources when they actually contributed to the answer.
     """
     user_query = payload.question
+    user_id = current_user["user_id"]
+
+    is_allowed = ai_chat_limiter.is_allowed(user_id=user_id, capacity=3, refill_rate=0.066)
+    if not is_allowed:
+        raise HTTPException(
+            status_code=429, 
+            detail="Rate limit exceeded! Too many requests. Please wait a few seconds."
+        )
+
     if not user_query.strip():
         raise HTTPException(status_code=400, detail="Question cannot be left empty")
 

@@ -20,6 +20,7 @@ A full-stack intelligent note-taking application with AI-powered question-answer
 - **User Authentication** — JWT-based secure login and registration
 - **Multi-Tenant** — Each user's notes and chats are fully isolated
 - **100% Local AI** — All AI processing runs on your machine via Ollama (no API keys, no cloud)
+- **Token Bucket Rate Limiting** — Custom, self-contained API rate limiter to protect local hardware compute channels against resource exhaustion attacks 🌟
 
 ---
 
@@ -54,6 +55,13 @@ A full-stack intelligent note-taking application with AI-powered question-answer
                            │  - nomic-embed   │
                            └──────────────────┘
 ```
+
+### System Design: Rate Limiting
+To prevent heavy LLM generation requests from overwhelming the local host CPU, the system implements an in-memory **Token Bucket Algorithm**. 
+
+- **Mechanism:** Tracks API request frequencies uniquely mapped against the user's authenticated session identifiers.
+- **Capacity Rules:** Configured with a burst capacity of 3 requests and a strict token regeneration interval ($capacity=3, refill\_rate=0.066$).
+- **Handling:** Excess request bursts exceeding the computational boundary are short-circuited instantly at the API gateway layer, returning a standard `HTTP 429 Too Many Requests` status code to protect application thread stability.
 
 ---
 
@@ -153,6 +161,7 @@ smart-notes-app/
 │   ├── main.py          # FastAPI app, all API endpoints
 │   ├── models.py        # Pydantic schemas (request/response validation)
 │   ├── auth.py          # JWT token + Bcrypt password utilities
+│   ├── limiter.py       # Custom in-memory Token Bucket rate limiter utility 🌟
 │   └── ai.py            # Ollama client (embeddings + LLM generation)
 ├── frontend/
 │   └── app.py           # Streamlit UI (notes, chat, auth)
@@ -181,12 +190,12 @@ smart-notes-app/
 | GET | `/notes/semantic-search` | AI-powered semantic search |
 
 ### AI Chat
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/ai/chat` | Ask a question (RAG pipeline) |
-| GET | `/ai/history` | List all chat sessions |
-| GET | `/ai/history/{session_id}` | Get full chat thread |
-| DELETE | `/ai/history/{session_id}` | Delete a chat session |
+| Method | Endpoint | Description | Status Codes |
+|--------|----------|-------------|--------------|
+| POST | `/ai/chat` | Ask a question (RAG pipeline) | `200 OK`, `429 Too Many Requests` 🛑 |
+| GET | `/ai/history` | List all chat sessions | `200 OK` |
+| GET | `/ai/history/{session_id}` | Get full chat thread | `200 OK`, `404 Not Found` |
+| DELETE | `/ai/history/{session_id}` | Delete a chat session | `200 OK` |
 
 ---
 
